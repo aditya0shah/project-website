@@ -3,9 +3,9 @@ layout: post
 title: "Fill, don't write: LLM query generation with OpenSearch search templates"
 authors:
   - adityashah
-date: 2026-09-30
+date: 2026-09-03
 categories:
-  - technical-post
+  - technical-posts
 meta_keywords: agentic search, search templates, LLM query generation, Mustache, OpenSearch DSL, agent server
 meta_description: A look at how agentic search can fill the parameters of a registered search template instead of writing full OpenSearch query DSL, and why constraining what the model produces improves latency and reliability.
 excerpt: Agentic search can now fill the parameters of a registered search template instead of authoring a full query, trading some flexibility for lower latency and more predictable results.
@@ -43,7 +43,7 @@ The model never has to produce the query structure, because the structure lives 
 
 That difference shows most clearly side by side:
 
-![Filling a template writes four values (18 characters); authoring the query directly writes the whole body (481 characters).](/assets/media/blog-images/2026-09-30-fill-dont-write-llm-query-generation-with-opensearch-search-templates/template-fill-demo.gif)
+![Filling a template writes four values (18 characters); authoring the query directly writes the whole body (481 characters).](/assets/media/blog-images/2026-09-03-fill-dont-write-llm-query-generation-with-opensearch-search-templates/template-fill-demo.gif)
 *For the same question, filling a template (left) has the model write four values, while authoring the query directly (right) has it write the entire request body.*
 
 The cost and latency of a generation request scale with how many tokens the model produces. Authoring a full query means writing the whole `_search` body, which grows as the query gets more complex. Filling a template means writing a handful of values, which stays small no matter how large the template is. Rendering the template into a query happens inside OpenSearch and takes about the same time regardless of the template's size.
@@ -74,7 +74,7 @@ PUT _cluster/settings
     "plugins.ml_commons.trusted_connector_endpoints_regex": [
       "^http://127\\.0\\.0\\.1:8001/.*$"
     ],
-    "plugins.ml_commons.connector.private_ip_enabled": "true"
+    "plugins.ml_commons.connector.private_ip_enabled": true
   }
 }
 ```
