@@ -69,7 +69,7 @@ PUT _cluster/settings
 
 The same setting also gates the `SearchTemplateFillTool` at run time: if you disable it, agents that use the tool return an error instead of filling a template.
 
-Two more ML Commons settings control the hosts that a connector may call. When you create a connector, ML Commons resolves its URL and matches it against `plugins.ml_commons.trusted_connector_endpoints_regex`. These settings apply to every connector. The default trusted endpoints already cover hosted model providers such as Amazon Bedrock, so with a hosted model the `SearchTemplateFillTool` usually needs no change. The agent server connector does: the default list doesn't include a service that you run yourself, so a connector that references your agent server is rejected. Addresses on the local machine or a private network are also refused unless `plugins.ml_commons.connector.private_ip_enabled` is enabled. For a local walkthrough, use the following settings:
+Two more ML Commons settings control the hosts that a connector may call. When you create a connector, ML Commons resolves its URL and matches it against `plugins.ml_commons.trusted_connector_endpoints_regex`. The default trusted endpoints already cover hosted model providers such as Amazon Bedrock, so with a hosted model the `SearchTemplateFillTool` usually needs no change. The agent server connector does: the default list doesn't include a service that you run yourself, so a connector that references your agent server is rejected. Addresses on the local machine or a private network are also refused unless `plugins.ml_commons.connector.private_ip_enabled` is enabled. Both settings apply to every connector. For a local walkthrough, use the following settings:
 
 ```json
 PUT _cluster/settings
@@ -379,7 +379,7 @@ OpenSearch substitutes those values into the template and runs the resulting que
 
 The response contains the matching documents from your index. If you enabled `dsl_query`, the `ext.dsl_query` field of the response contains the preceding query. To produce it, the model supplied three values: `query_text`, `sort_by`, and `size`. The sort clause appears because the model filled the optional `sort_by` parameter. The model omitted the optional `category` parameter and kept `footwear` in `query_text`, so the query has no category filter, and products from other categories whose titles match `shoes` can appear in the results. [Improving results by describing your parameters](#improving-results-by-describing-your-parameters) describes how to address this.
 
-When the agent server fills the template for this question, it produces the same query. However, it sometimes declines the template and writes the query directly. In our tests, it declined in more than half of runs.
+When the agent server fills the template for this question, it produces the same query. However, it sometimes declines the template and writes the query directly. In our tests, it declined in three of five runs.
 
 The `agentic` clause has several constraints of its own. It must be the top-level query, and your request cannot also use aggregations, `sort`, highlighting, `post_filter`, `suggest`, `rescore`, or `collapse`, because the generated query replaces the search body. Sorting is still supported, as in the preceding example, when the template produces the `sort` clause. Two other clause fields do not apply when the agent fills a template: `query_fields` is not passed to the fill prompt, and `memory_id` is rejected by a flow agent.
 
@@ -421,7 +421,7 @@ A template supports a defined range of questions. A user might ask for something
 
 The model can decline instead. Every request that fills a template includes a way for the model to report that the template cannot express the question. When it does, agentic search writes the query directly from the index, the same behavior it uses when no template is involved. In both cases you receive results: a filled template when the question matches one, and a generated query when it does not.
 
-How other failures are handled depends on where the template is filled. The agent server falls back to writing the query directly on any failure, for example, an unreadable template, a failed LLM call, invalid values, or a template that doesn't render, and it never returns these errors. If query generation fails entirely, it returns a `match_all` query. The agent server, not OpenSearch, catches these failures. The `SearchTemplateFillTool` falls back when the model declines, when no template is usable for the searched index, when the model doesn't call the tool, when the values don't match the parameter schema, when the model picks a template that isn't a candidate, or when the rendered template is not a single JSON object. It returns an error instead when reading the registered templates or the LLM call itself fails, for example, because of throttling. To have the tool return an error instead of falling back, set `"fallback_enabled": "false"` in its `config`.
+How other failures are handled depends on where the template is filled. The agent server falls back to writing the query directly on any failure, for example, an unreadable template, a failed LLM call, invalid values, or a template that doesn't render, and it never returns these errors. If query generation fails entirely, it returns a `match_all` query. The agent server, not OpenSearch, catches these failures. The `SearchTemplateFillTool` falls back when the model declines, when no template is usable for the searched index, when the model doesn't call the tool, when the values don't match the parameter schema, when the model picks a template that isn't a candidate, or when the template doesn't render to a single JSON object. It returns an error instead when reading the registered templates or the LLM call itself fails, for example, because of throttling. To have the tool return an error instead of falling back, set `"fallback_enabled": "false"` in its `config`.
 
 A query that renders but expresses the wrong request raises no error on either path, and the decline behavior prevents the model from filling a template that cannot express the question. Note that a declined question costs two generation calls rather than one, so the latency advantage applies to the questions that your templates actually support.
 
@@ -440,9 +440,11 @@ You can offer the agent more than one template. If you register several template
 With the agent server, change two fields in the preceding connector configuration. First, list the candidate IDs in the static parameters, and remove the `template_id` entry, since a connector that specifies both sends the scalar as an extra candidate:
 
 ```json
-"parameters": {
-  "endpoint": "127.0.0.1:8001",
-  "template_ids": "[\"product_search\", \"semantic_product_search\"]"
+{
+  "parameters": {
+    "endpoint": "127.0.0.1:8001",
+    "template_ids": "[\"product_search\", \"semantic_product_search\"]"
+  }
 }
 ```
 
