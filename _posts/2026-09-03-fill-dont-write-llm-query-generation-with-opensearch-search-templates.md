@@ -28,7 +28,7 @@ Agentic search templates require OpenSearch 3.10 or later. The other prerequisit
 - **Agent server**:
   - **A running OpenSearch agent server** that is reachable from your cluster. For more information, see [Bringing intelligence to OpenSearch: Introducing the OpenSearch agent server](https://opensearch.org/blog/bringing-intelligence-to-opensearch-introducing-the-opensearch-agent-server/). The configuration described in this blog post registers a flow agent that calls the agent server.
   - **Amazon Bedrock as the agent server's model provider**: Filling a template uses a forced tool call, which the agent server currently implements only for Bedrock. If you use another provider, the fill attempt fails and the request falls back to writing the query directly, so searches continue to work but the template is never used.
-  - **Permissions for the connector's credential**, if your cluster runs the Security plugin. The agent server makes its calls to the cluster as the user of the bearer token in the connector's credential. That user needs read access to the `.plugins-ml-agentic-search-templates` system index, which stores the parameter schemas. Because it is a protected system index, the user's role must also grant `system:admin/system_index` on it, and `plugins.security.system_indices.permission.enabled` must be `true`. The user also needs permission to render templates (`indices:data/read/search/template/render`) and to read the mapping of the searched index (`indices:admin/mappings/get`). Without these permissions, the request falls back to writing the query directly without returning an error.
+  - **Permissions for the connector's credential**, if your cluster runs the Security plugin. The agent server makes its calls to the cluster as the user of the bearer token in the connector's credential. That user needs the `indices:data/read/search/template/render` permission to render templates, granted as a cluster permission in `cluster_permissions`. Granting it as an index permission, even on the `*` index pattern, doesn't allow rendering. The user also needs read access to the `.plugins-ml-agentic-search-templates` system index, which stores the parameter schemas. Because it is a protected system index, the user's role must also grant `system:admin/system_index` on it, and `plugins.security.system_indices.permission.enabled` must be `true`. Without these permissions, the request falls back to writing the query directly without returning an error. When it falls back, the agent server reads the mapping of the searched index and searches it for sample documents, so the user also needs `indices:admin/mappings/get` and `read` on that index. Without `read`, the fallback writes the query without sample documents.
 
 If you have not used agentic search before, start with the [3.3 introduction](https://opensearch.org/blog/introducing-agentic-search-in-opensearch-transforming-data-interaction-through-natural-language/) and the [hands-on walkthrough](https://opensearch.org/blog/opensearch-3-4s-agentic-search-in-opensearch-dashboards-hands-on-use-cases-and-examples/).
 
@@ -348,16 +348,16 @@ POST /products/_search?search_pipeline=product_agentic_pipeline
 {
   "query": {
     "agentic": {
-      "query_text": "the 5 most expensive shoes in the footwear category"
+      "query_text": "the 2 most expensive footwear shoes"
     }
   }
 }
 ```
 
-When OpenSearch processes the request, the agent sends your question and the schema for `product_search` to the model, and the model returns values:
+When OpenSearch processes the request, the agent sends your question and the schema for `product_search` to the model, and the model returns values. In our tests with the `SearchTemplateFillTool`, the model returned the following values:
 
 ```json
-{ "query_text": "shoes", "category": "footwear", "sort_by": "price", "size": 5 }
+{ "query_text": "footwear shoes", "sort_by": "price", "size": 2 }
 ```
 
 OpenSearch substitutes those values into the template and runs the resulting query:
@@ -366,16 +366,16 @@ OpenSearch substitutes those values into the template and runs the resulting que
 {
   "query": {
     "bool": {
-      "must":   [ { "match": { "title": "shoes" } } ],
-      "filter": [ { "term": { "category": "footwear" } } ]
+      "must":   [ { "match": { "title": "footwear shoes" } } ],
+      "filter": [ ]
     }
   },
   "sort": [ { "price": "desc" } ],
-  "size": 5
+  "size": 2
 }
 ```
 
-The response contains the matching documents from your index. If you enabled `dsl_query`, the `ext.dsl_query` field of the response contains the preceding query. To produce it, the model supplied four values: `query_text`, `category`, `sort_by`, and `size`. The category filter and the sort clause appear because the model filled the `category` and `sort_by` optional parameters. 
+The response contains the matching documents from your index. If you enabled `dsl_query`, the `ext.dsl_query` field of the response contains the preceding query. To produce it, the model supplied three values: `query_text`, `sort_by`, and `size`. The sort clause appears because the model filled the optional `sort_by` parameter. The model omitted the optional `category` parameter and kept `footwear` in `query_text`, so the query has no category filter, and products from other categories whose titles match `shoes` can appear in the results. [Improving results by describing your parameters](#improving-results-by-describing-your-parameters) describes how to address this.
 
 The `agentic` clause has several constraints of its own. It must be the top-level query, and your request cannot also use aggregations, `sort`, highlighting, `post_filter`, `suggest`, `rescore`, or `collapse`, because the generated query replaces the search body. Sorting is still supported, as in the preceding example, when the template produces the `sort` clause. Two other clause fields do not apply when the agent fills a template: `query_fields` is not passed to the fill prompt, and `memory_id` is rejected by a flow agent.
 
@@ -385,7 +385,7 @@ Because the template fixes the query structure, the remaining source of error is
 
 Units are the clearest example. Suppose a template has a parameter that bounds a weight field. Derivation can determine that it is an upper bound on a range, but the unit is not derivable from the template body. Ask for "a tent that weighs under 1.5 kilograms" and a model working from the parameter name alone might supply `1.5` for a bound that the template applies to price, because both are numbers and both fit the sentence. Stating the unit in the description removes the ambiguity.
 
-The same applies to the preceding `product_search` schema. The `query_text` parameter is used in a `match` clause, so filter words do not belong in it, and `sort_by` includes every sortable field in the mapping, including `category`, which this template already uses as a filter. We recommend narrowing both:
+The same applies to the preceding `product_search` schema. The `query_text` parameter is used in a `match` clause, so filter words such as `footwear` in the preceding example do not belong in it, and `sort_by` includes every sortable field in the mapping, including `category`, which this template already uses as a filter. We recommend narrowing both:
 
 ```json
 PUT /_plugins/_ml/agentic_search_templates/product_search
