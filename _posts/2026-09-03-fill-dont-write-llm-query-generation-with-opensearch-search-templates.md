@@ -28,7 +28,7 @@ Agentic search templates require OpenSearch 3.10 or later. The other prerequisit
 - **Agent server**:
   - **A running OpenSearch agent server** that is reachable from your cluster. For more information, see [Bringing intelligence to OpenSearch: Introducing the OpenSearch agent server](https://opensearch.org/blog/bringing-intelligence-to-opensearch-introducing-the-opensearch-agent-server/). The configuration described in this blog post registers a flow agent that calls the agent server.
   - **Amazon Bedrock as the agent server's model provider**: Filling a template uses a forced tool call, which the agent server currently implements only for Bedrock. If you use another provider, the fill attempt fails and the request falls back to writing the query directly, so searches continue to work but the template is never used.
-  - **Permissions for the connector's credential**, if your cluster runs the Security plugin. The agent server makes its calls to the cluster as the user of the bearer token in the connector's credential. That user needs the `indices:data/read/search/template/render` permission to render templates, granted as a cluster permission in `cluster_permissions`. Granting it as an index permission, even on the `*` index pattern, doesn't allow rendering. The user also needs read access to the `.plugins-ml-agentic-search-templates` system index, which stores the parameter schemas. Because it is a protected system index, the user's role must also grant `system:admin/system_index` on it, and `plugins.security.system_indices.permission.enabled` must be `true`. Without these permissions, the request falls back to writing the query directly without returning an error. When it falls back, the agent server reads the mapping of the searched index and searches it for sample documents, so the user also needs `indices:admin/mappings/get` and `read` on that index. Without `read`, the fallback writes the query without sample documents.
+  - **Permissions for the connector's credential**, if your cluster runs the Security plugin. The agent server makes its calls to the cluster as the user of the bearer token in the connector's credential. That user needs the `indices:data/read/search/template/render` permission to render templates, granted as a cluster permission in `cluster_permissions`. Granting it as an index permission, even on the `*` index pattern, doesn't allow rendering. The user also needs read access to the `.plugins-ml-agentic-search-templates` system index, which stores the parameter schemas. Because it is a protected system index, the user's role must also grant `system:admin/system_index` on it, and `plugins.security.system_indices.permission.enabled` must be `true`. Without these permissions, the request falls back to writing the query directly without returning an error. When it falls back, the agent server reads the mapping of the searched index and searches it for a sample document, so the user also needs `indices:admin/mappings/get` and `read` on that index. Without `read`, the fallback writes the query without a sample document.
 
 If you have not used agentic search before, start with the [3.3 introduction](https://opensearch.org/blog/introducing-agentic-search-in-opensearch-transforming-data-interaction-through-natural-language/) and the [hands-on walkthrough](https://opensearch.org/blog/opensearch-3-4s-agentic-search-in-opensearch-dashboards-hands-on-use-cases-and-examples/).
 
@@ -69,7 +69,7 @@ PUT _cluster/settings
 
 The same setting also gates the `SearchTemplateFillTool` at run time: if you disable it, agents that use the tool return an error instead of filling a template.
 
-If you fill templates in the agent server, two more ML Commons settings control the hosts that the agent server connector may call. They don't apply to the `SearchTemplateFillTool`. When you create a connector, ML Commons resolves its URL and matches it against `plugins.ml_commons.trusted_connector_endpoints_regex`. The default list includes hosted model providers rather than a service that you run yourself, so a connector that references your agent server is rejected. Addresses on the local machine or a private network are also refused unless `plugins.ml_commons.connector.private_ip_enabled` is enabled. For a local walkthrough, use the following settings:
+Two more ML Commons settings control the hosts that a connector may call. When you create a connector, ML Commons resolves its URL and matches it against `plugins.ml_commons.trusted_connector_endpoints_regex`. These settings apply to every connector. The default trusted endpoints already cover hosted model providers such as Amazon Bedrock, so with a hosted model the `SearchTemplateFillTool` usually needs no change. The agent server connector does: the default list doesn't include a service that you run yourself, so a connector that references your agent server is rejected. Addresses on the local machine or a private network are also refused unless `plugins.ml_commons.connector.private_ip_enabled` is enabled. For a local walkthrough, use the following settings:
 
 ```json
 PUT _cluster/settings
@@ -156,7 +156,7 @@ Registration also validates the template. OpenSearch renders the body twice, onc
 
 Registration creates the template once. Register the same `template_id` again and OpenSearch returns a `409` instead of overwriting the existing template, so a schema that you have tuned is preserved.
 
-During registration, OpenSearch derives the parameter schema from the template body. It reads each Mustache tag to determine the type and whether the parameter is required, and it uses your index mapping to supply the choices for parameters that select a field: a parameter named `field` or `sort_by`, or one whose name ends in `_field`. It also renders the body to determine the position each parameter occupies in the resulting query, then uses the surrounding clause to write a description for it. The derivation follows fixed rules, with no model involved. You can inspect the result:
+During registration, OpenSearch derives the parameter schema from the template body. It reads each Mustache tag to determine the type and whether the parameter is required, and it uses your index mapping to supply the choices for parameters that select a field: a parameter named `field` or `sort_by`, or one whose name ends in `_field`. Such a parameter gets every mapped field, narrowed to the sortable fields when the parameter sets the sort field. If the parameter renders in a value position instead, it gets no list of choices. It also renders the body to determine the position each parameter occupies in the resulting query, then uses the surrounding clause to write a description for it. The derivation follows fixed rules, with no model involved. You can inspect the result:
 
 ```json
 GET /_plugins/_ml/agentic_search_templates/product_search
@@ -356,7 +356,7 @@ POST /products/_search?search_pipeline=product_agentic_pipeline
 }
 ```
 
-When OpenSearch processes the request, the agent sends your question and the schema for `product_search` to the model, and the model returns values. In our tests with the `SearchTemplateFillTool`, the model returned the following values:
+When OpenSearch processes the request, the agent sends your question and the schema for `product_search` to the model, and the model returns values. In our tests, the `SearchTemplateFillTool` returned the following values. LLM output can vary between runs:
 
 ```json
 { "query_text": "footwear shoes", "sort_by": "price", "size": 2 }
@@ -378,6 +378,8 @@ OpenSearch substitutes those values into the template and runs the resulting que
 ```
 
 The response contains the matching documents from your index. If you enabled `dsl_query`, the `ext.dsl_query` field of the response contains the preceding query. To produce it, the model supplied three values: `query_text`, `sort_by`, and `size`. The sort clause appears because the model filled the optional `sort_by` parameter. The model omitted the optional `category` parameter and kept `footwear` in `query_text`, so the query has no category filter, and products from other categories whose titles match `shoes` can appear in the results. [Improving results by describing your parameters](#improving-results-by-describing-your-parameters) describes how to address this.
+
+When the agent server fills the template for this question, it produces the same query. However, it sometimes declines the template and writes the query directly. In our tests, it declined in more than half of runs.
 
 The `agentic` clause has several constraints of its own. It must be the top-level query, and your request cannot also use aggregations, `sort`, highlighting, `post_filter`, `suggest`, `rescore`, or `collapse`, because the generated query replaces the search body. Sorting is still supported, as in the preceding example, when the template produces the `sort` clause. Two other clause fields do not apply when the agent fills a template: `query_fields` is not passed to the fill prompt, and `memory_id` is rejected by a flow agent.
 
@@ -408,7 +410,7 @@ The update API merges these descriptions into the stored schema, so you change o
 
 - **State units and scale** for numeric parameters. A model is most likely to substitute one field for another for amounts, durations, and distances.
 - **Say what a parameter should exclude**, not just what it contains. A full-text parameter is the common case: without guidance, a model tends to supply the entire question as the value, including words that belong in filters.
-- **Narrow the allowed values** to those that are valid for your data. Derivation lists every mapped field for a field-selector parameter, or every sortable field for `sort_by`, which is broader than the fields that you intend to sort on.
+- **Narrow the allowed values** to those that are valid for your data. Derivation lists every mapped field for a field-selector parameter, narrowed to the sortable fields when the parameter sets the sort field. Either list is usually broader than the fields that you intend to use.
 - **Mention the fallback** for an optional parameter when derivation did not identify one, so the model can omit the parameter rather than generating an arbitrary value.
 
 None of these edits is required to begin, and a template with derived descriptions is usable as registered. Make these edits once you have identified questions that return incorrect results.
@@ -419,7 +421,7 @@ A template supports a defined range of questions. A user might ask for something
 
 The model can decline instead. Every request that fills a template includes a way for the model to report that the template cannot express the question. When it does, agentic search writes the query directly from the index, the same behavior it uses when no template is involved. In both cases you receive results: a filled template when the question matches one, and a generated query when it does not.
 
-How other failures are handled depends on where the template is filled. The agent server falls back to writing the query directly on any failure, for example, an unreadable template, a failed LLM call, invalid values, or a template that doesn't render, and it never returns these errors. If query generation fails entirely, it returns a `match_all` query. The agent server, not OpenSearch, catches these failures. The `SearchTemplateFillTool` falls back when the model declines, when no template is usable for the searched index, when the values don't match the parameter schema, or when the rendered template is not a single JSON object. It returns an error instead when reading the registered templates or the LLM call itself fails, for example, because of throttling. To have the tool return an error instead of falling back, set `"fallback_enabled": "false"` in its `config`.
+How other failures are handled depends on where the template is filled. The agent server falls back to writing the query directly on any failure, for example, an unreadable template, a failed LLM call, invalid values, or a template that doesn't render, and it never returns these errors. If query generation fails entirely, it returns a `match_all` query. The agent server, not OpenSearch, catches these failures. The `SearchTemplateFillTool` falls back when the model declines, when no template is usable for the searched index, when the model doesn't call the tool, when the values don't match the parameter schema, when the model picks a template that isn't a candidate, or when the rendered template is not a single JSON object. It returns an error instead when reading the registered templates or the LLM call itself fails, for example, because of throttling. To have the tool return an error instead of falling back, set `"fallback_enabled": "false"` in its `config`.
 
 A query that renders but expresses the wrong request raises no error on either path, and the decline behavior prevents the model from filling a template that cannot express the question. Note that a declined question costs two generation calls rather than one, so the latency advantage applies to the questions that your templates actually support.
 
@@ -428,8 +430,10 @@ A query that renders but expresses the wrong request raises no error on either p
 You can offer the agent more than one template. If you register several templates for an index, for example, a keyword search and a semantic search, list all of them as candidates. With the `SearchTemplateFillTool`, list the IDs in the `template_ids` field of the tool's `config`:
 
 ```json
-"config": {
-  "template_ids": "[\"product_search\", \"semantic_product_search\"]"
+{
+  "config": {
+    "template_ids": "[\"product_search\", \"semantic_product_search\"]"
+  }
 }
 ```
 
@@ -470,7 +474,7 @@ Agentic search templates apply to searches whose structure you can define in adv
 
 - **Product and catalog search**: A product search application sends the same query structure for nearly every request. The query matches the user's words against the title and description fields, filters on category, brand, price, and availability, and sorts by relevance or price. The template defines the relevance configuration that you tuned, and the model supplies the user's terms and filters. Questions such as "waterproof jackets under $150, in stock" and "cheapest wool socks" fill the same template.
 - **Searches with rules that must always apply**: Many applications require every query to include a filter. For example, a query may need to filter on a tenant identifier, an `is_active` flag, or a visibility or region field. When the filter is part of the template body, it appears in every rendered query. A template makes the filter consistent across generated queries, but it defines only the queries that the agent generates, so it is not a substitute for document-level security.
-- **Searches over a hand-tuned relevance configuration**: If your query uses field boosts, a `function_score`, or a decay function that required tuning, the template stores that configuration. The model changes the terms and filters without modifying the scoring. This leads to the largest latency gain is also largest in this case, because the model no longer produces the long query body.
+- **Searches over a hand-tuned relevance configuration**: If your query uses field boosts, a `function_score`, or a decay function that required tuning, the template stores that configuration. The model changes the terms and filters without modifying the scoring. The latency gain is also largest in this case, because the model no longer produces the long query body.
 
 Direct query authoring remains preferable for open-ended exploration, in which you can't predict the structure of a question and need the model's full range, and for analytics questions such as aggregations. Because the model declines a question that a template cannot express, a practical approach is to register templates for the searches that you serve most often and let the model write the remaining queries directly.
 
