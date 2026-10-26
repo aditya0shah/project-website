@@ -102,6 +102,7 @@ PUT products
 }
 ```
 
+{% raw %}
 Next, store the search template as a Mustache script. Store the body as a string, not as a JSON object: a body that uses conditional sections such as `{{#category}}` is not valid JSON until it renders, so an object body is rejected:
 
 ```json
@@ -130,6 +131,7 @@ Escaped on one line, the body is hard to read, so the following listing shows it
   "size": {{size}}
 }
 ```
+{% endraw %}
 
 Wrapping `category` and `sort_by` in Mustache sections marks them as optional: when the model omits one, the rendered query does not include that clause.
 
